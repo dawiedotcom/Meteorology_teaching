@@ -7,5 +7,4 @@ metpy~=1.6.2
 cartopy~=0.23
 lxml~=4.9.1
 xarray~=2023.6.0
-cachier
-pymetdecoder
+cachier~=3.0.1
