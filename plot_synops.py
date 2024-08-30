@@ -1,28 +1,29 @@
 # retrieve SYNOP messages and then plot them.
 from __future__ import annotations
-
-import argparse
+import matplotlib
+matplotlib.use("Agg") # headless matplotlib
 import pathlib
 import typing
 from io import StringIO
 
 import cartopy.crs as ccrs
+import matplotlib.pyplot
 import matplotlib.pyplot as plt
-# import matplotlib
-# matplotlib.use("Agg") # headless matplotlib
+
 import numpy as np
 import pandas as pd
 import pymetdecoder.synop
 import requests
+import xarray
 from metpy.calc import reduce_point_density
 
 import metlib
 import pymetdecoder
-
 cache_dir = metlib.cache_dir
 pd.options.mode.copy_on_write = True
 from cachier import cachier  # provides a cache for functions
 import datetime
+typ_flt_int = typing.Union[float, int]
 
 
 @cachier(cache_dir=cache_dir, separate_files=True)
@@ -237,124 +238,172 @@ def load_open_midas_synop(date_range: tuple[pd.Timestamp, pd.Timestamp]) -> pd.D
     all_stations = all_stations.merge(srce, left_on='src_id', right_on='src_id')
     return all_stations
 
-
-# setup parser and deal with arguments
-typ_flt_int = typing.Union[float, int]
-parser = argparse.ArgumentParser(description='Plot SYNOP data')
-parser.add_argument('--date', type=pd.Timestamp, help='UTC date/time to plot data for. ',
-                    default=pd.Timestamp.utcnow() - pd.Timedelta(2, 'h'))
-parser.add_argument('--use_cache', type=bool, help='Use the cache for the data.', default=True)
-parser.add_argument('--thin', type=float, help='Thin distance in km', default=40.)
-#parser.add_argument('--block', type=str, help='WMO block to use.', default='33')
-#parser.add_argument('--state', type=str, help='State to use. Do not specify block and state', default=None)
-parser.add_argument('--output', type=pathlib.Path,
-                    help='Output file to save the plot to. If not specified with be constructed from date and be pdf',
-                    default=None)
-parser.add_argument('--figsize', nargs=2, type=float, help='Page size for the plot. Default is A3.',
-                    default=(11.69, 16.53))
-parser.add_argument('--region', nargs=4, type=float,
-                    help='Region (long0,long1,lat0,lat1) to plot in degrees. Default is UK.',
-                    default=(-11., 2., 49.0, 61.5))  # from Guernsey to Shetland, W-Ireland to E-England
-parser.add_argument('--use_midas_csv', action='store_true',
-                    help='Use open-midas csv files. They should already have been downloaded from BADC. ')
-parser.add_argument('--nocache', action='store_true', help='Do not use the cache.')
-parser.add_argument('--plot_pressure', action='store_true',
-                    help='Plot the pressure on the map. Will try and retrieve ERA5 data.')
-args = parser.parse_args()
-
-date = args.date.round('h')  # round to nearest hour
-try:
-    date = date.tz_localize('UTC')
-except TypeError:  # already in UTC
-    pass
-
-if date > pd.Timestamp.utcnow() + pd.Timedelta(1, 'h'):
-    raise ValueError('Date is in the future. Cannot plot data for the future.')
-
-save_file = args.output
-if save_file is None:
-    save_file = date.strftime("station_plot_%Y%m%d_%H.pdf")
-date_range = (date - pd.Timedelta(4, 'h'), date + pd.Timedelta(1, 'h'))  # data range to retrieve.
-#proj = ccrs.OSGB()
-proj = ccrs.AlbersEqualArea(central_longitude=0, central_latitude=54, false_easting=400000, false_northing=-100000)
-# add in meta-data
-if args.use_midas_csv:  # use the downloaded open-midas data
-    midas_stations = load_open_midas_synop(date_range, cachier__skip_cache=args.nocache)
-    synops_to_plot = midas_stations[midas_stations.ob_time == date].groupby(by='src_id', as_index=True).head(
-        1).set_index('src_id')
-
-    # add in derived data for pressure changes.
-    p_data = midas_stations.loc[:, ['src_id', 'ob_time', 'msl_pressure']]
-    p_data = p_data[p_data.ob_time.between(date - pd.Timedelta(3, 'h'), date)]
-    pp = p_data.groupby('src_id').apply(metlib.df_p_change, include_groups=False).droplevel(1)
-    synops_to_plot = synops_to_plot.merge(pp, left_index=True, right_index=True)
-    synops_to_plot['cloud_base_height_code'] = metlib.cld_base_code(synops_to_plot.cloud_base_height)  # temp hac
-
-else:  # get the raw synop messages and decode them
-    isd = read_isd_metadata(country=('UK', 'EI'), cachier__skip_cache=args.nocache)  # extract the UK data
-    # now convert USAF locations to WMO locations. -- first five values.
-    isd['wmo_station_id'] = isd.USAF.str[0:5].astype('Int32')
-    isd = isd.rename(columns=dict(LON='longitude', LAT='latitude'))
-    synops = retrieve_synops(date_range, state=None, cachier__skip_cache=args.nocache)
-    decoded_synops = decode_synop_messages(synops)
-    # add on meta-data
-    decoded_synops = decoded_synops.merge(isd, left_on='wmo_station_id', right_on='wmo_station_id')
-    synops_to_plot = decoded_synops[decoded_synops.ob_time == date]
-
-# restrict to region..
-synops_to_plot = synops_to_plot[
-    synops_to_plot.latitude.between(args.region[2], args.region[3]) &
-    synops_to_plot.longitude.between(args.region[0], args.region[1])]
-
-# thin
-point_locs = proj.transform_points(ccrs.PlateCarree(), synops_to_plot.longitude, synops_to_plot.latitude)
-priority = np.where(synops_to_plot.operator_type == 'MANUAL', 10, 0)
-# increase priority where have present_weather.
-priority[synops_to_plot.present_weather.notnull()] = priority[synops_to_plot.present_weather.notnull()] + 5
-synops_to_plot['present_weather'] = synops_to_plot['present_weather'].fillna(0)
-synops_to_plot = synops_to_plot[reduce_point_density(point_locs, args.thin * 1e3, priority=priority)]
-pressure = None
-if args.plot_pressure:
+@cachier(stale_after=datetime.timedelta(weeks=2), next_time=True)
+def read_synops(date: pd.Timestamp = pd.Timestamp.utcnow(),
+                region: tuple[typ_flt_int, typ_flt_int, typ_flt_int, typ_flt_int] = (-11., 2., 49.0, 61.5),
+                nocache: bool = False,
+                use_midas_csv: bool = False,
+                get_pressure: bool = True) -> tuple[pd.DataFrame, typing.Optional[xarray.Dataset]]:
+    """
+    Read the SYNOP data for the given date and region.
+    :param date: date to read the data for.
+    :param region: region to read the data for. (long0, long1, lat0, lat1)
+    :param nocache: If True, do not use the cache.
+    :param use_midas_csv: If True, use the open-midas csv files. If False, use the OGIMET website.
+    :param get_pressure: If True, try and retrieve the pressure data from ERA5.
+    :return: tuple of the SYNOP data and the pressure data. pressure data will be None if get_pressure is False.
+    """
     try:
-        pressure = metlib.get_era5_pressure(date, region=args.region, cachier__skip_cache=args.nocache)
-    except ValueError:
-        print('Failed to retrieve ERA5 data. Will not plot pressure')
+        date = date.tz_localize('UTC')
+    except TypeError:  # already in UTC
         pass
-## data fixes
-#set 0 precip missing.
+    date = date.round('h')  # round to nearest hour
+    if date > pd.Timestamp.utcnow() + pd.Timedelta(1, 'h'):
+        raise ValueError('Date is in the future. Cannot plot data for the future.')
 
-## plot the data
-cloud_type = dict(color='black')
-weather = dict(color='black', fontsize=11)
-kwrds = dict(
-    low_cloud_type=cloud_type,
-    medium_cloud_type=cloud_type,
-    high_cloud_type=cloud_type,
-    current_weather_both=weather,
-    past_weather=weather,
-    air_temperature=dict(color='red'),
-    precipitation=dict(color='blue'),
-    precipitation_time_code=dict(color='blue'),
-    dewpoint=dict(color='green'),
-    #visibility_code = dict(color='springgreen'),
-    #cld_text = dict(color='purple'),
-)
 
-fig_map_synop, ax = plt.subplots(1, 1, figsize=args.figsize, subplot_kw=dict(projection=proj), clear=True,
-                                 layout='tight', num='synop_circ')
+    if use_midas_csv:  # use the downloaded open-midas data
+        date_range = (date - pd.Timedelta(4, 'h'), date + pd.Timedelta(1, 'h'))  # data range to retrieve.
+        midas_stations = load_open_midas_synop(date_range, cachier__skip_cache=args.nocache)
+        synops = midas_stations[midas_stations.ob_time == date].groupby(by='src_id', as_index=True).head(
+            1).set_index('src_id')
 
-ax.set_extent(args.region, crs=ccrs.PlateCarree())
-ax.coastlines(color='grey', linewidth=1)
-ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, color='grey')
-# plot the pressure (if we have it)
-if pressure is not None:
-    p = pressure.sel(valid_time=date.tz_convert(None)).msl.squeeze(drop=True) / 100  # convert to hPa
-    cs = p.plot.contour(ax=ax, transform=ccrs.PlateCarree(), colors='grey', levels=range(960, 1040, 4), zorder=-200)
-    ax.clabel(cs, inline=True, fontsize=10, zorder=-200, colors='grey')
-synop = metlib.SynopPlot(ax, synops_to_plot.longitude, synops_to_plot.latitude, synops_to_plot,
-                         transform=ccrs.PlateCarree(),
-                         text_fontsize=10, small_text_fontsize=8, clip_on=True)
-synop.plot(**kwrds)  # plot them.  Override anything that needs overwritten here
-ax.set_title(f'{date}')
-fig_map_synop.show()
-fig_map_synop.savefig(save_file, dpi=300, bbox_inches="tight")
+        # add in derived data for pressure changes.
+        p_data = midas_stations.loc[:, ['src_id', 'ob_time', 'msl_pressure']]
+        p_data = p_data[p_data.ob_time.between(date - pd.Timedelta(3, 'h'), date)]
+        pp = p_data.groupby('src_id').apply(metlib.df_p_change, include_groups=False).droplevel(1)
+        synops = synops.merge(pp, left_index=True, right_index=True)
+        synops['cloud_base_height_code'] = metlib.cld_base_code(synops.cloud_base_height)  # temp hac
+
+    else:  # get the raw synop messages and decode them
+        date_range = (date, date)  # date range to retrieve -- just the date!
+        isd = read_isd_metadata(country=('UK', 'EI'), cachier__skip_cache=args.nocache)  # extract the UK data
+        # now convert USAF locations to WMO locations. -- first five values.
+        isd['wmo_station_id'] = isd.USAF.str[0:5].astype('Int32')
+        isd = isd.rename(columns=dict(LON='longitude', LAT='latitude'))
+        synops = retrieve_synops(date_range, state=None, cachier__skip_cache=nocache)
+        decoded_synops = decode_synop_messages(synops)
+        # add on meta-data
+        decoded_synops = decoded_synops.merge(isd, left_on='wmo_station_id', right_on='wmo_station_id')
+        synops = decoded_synops[decoded_synops.ob_time == date]
+
+    # restrict to region..
+    synops = synops[
+        synops.latitude.between(region[2], region[3]) &
+        synops.longitude.between(region[0], region[1])]
+    # fix current weather
+    synops['present_weather'] = synops['present_weather'].fillna(0) # should be 103??
+    # extract pressure if requested.
+    pressure = None
+    if get_pressure:
+        try:
+            pressure = metlib.get_era5_pressure(date, region=args.region, cachier__skip_cache=args.nocache)
+        except ValueError:
+            print('Failed to retrieve ERA5 data. ')
+            pass
+    return synops, pressure
+
+def plot_synops(synops:pd.DataFrame,
+                pressure:typing.Optional[xarray.Dataset]=None,
+                thin:float=100.,
+                figsize:tuple[float,float]=(10,10), #
+                ) -> tuple[matplotlib.pyplot.Figure,matplotlib.pyplot.Axes]:
+    """"
+    Plot the SYNOP data on a map.
+    :param synops: dataframe of SYNOP data.
+    :param pressure: xarray dataset of pressure data. (If None not plotted)
+    :param thin: thinning distance in km.
+    :param figsize: size of the figure.
+
+    :returns: matplotlib figure and ax.
+    """
+    # thin the data
+    proj = ccrs.AlbersEqualArea(central_longitude=0, central_latitude=54, false_easting=400000, false_northing=-100000) # UK projection
+    # should be a function of lon/lat co-ords.
+    point_locs = proj.transform_points(ccrs.PlateCarree(), synops.longitude, synops.latitude)
+    priority = np.where(synops.operator_type == 'MANUAL', 10, 0)
+    # increase priority where have present_weather.
+    priority[synops.present_weather.notnull()] = priority[synops.present_weather.notnull()] + 5
+    synops_to_plot = synops[reduce_point_density(point_locs, thin * 1e3, priority=priority)]
+    # plot the data
+    # default tweaked plotting arguments
+    cloud_type = dict(color='black')
+    weather = dict(color='black', fontsize=11)
+    kwrds = dict(
+        low_cloud_type=cloud_type,
+        medium_cloud_type=cloud_type,
+        high_cloud_type=cloud_type,
+        current_weather_both=weather,
+        past_weather=weather,
+        air_temperature=dict(color='red'),
+        precipitation=dict(color='blue'),
+        precipitation_time_code=dict(color='blue'),
+        dewpoint=dict(color='green'),
+
+    )
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize, subplot_kw=dict(projection=proj), clear=True,
+                                     layout='tight', num='synop_circ')
+
+    ax.set_extent(args.region, crs=ccrs.PlateCarree())
+    ax.coastlines(color='grey', linewidth=1)
+    ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, color='grey')
+    # plot the pressure (if we have it)
+    if pressure is not None:
+        p = pressure.sel(valid_time=date.tz_convert(None)).msl.squeeze(drop=True) / 100  # convert to hPa
+        cs = p.plot.contour(ax=ax, transform=ccrs.PlateCarree(), colors='grey', levels=range(960, 1040, 4), zorder=-200)
+        ax.clabel(cs, inline=True, fontsize=10, zorder=-200, colors='grey')
+    stns = metlib.SynopPlot(ax, synops_to_plot.longitude, synops_to_plot.latitude, synops_to_plot,
+                             transform=ccrs.PlateCarree(),
+                             text_fontsize=10, small_text_fontsize=8, clip_on=True)
+    stns.plot(**kwrds)  # plot them.  Override anything that needs overwritten here
+    ax.set_title(f'{synops_to_plot.ob_time.unique()[0]}')
+    return fig,ax
+
+if __name__ == '__main__':
+    # code is running as a script
+    # setup parser and deal with arguments
+    import argparse
+
+
+    parser = argparse.ArgumentParser(description='Plot SYNOP data for Great Britain and Ireland. Could be extended to other regions.')
+    parser.add_argument('--date', type=pd.Timestamp, help='UTC date/time to plot data for. ',
+                        default=pd.Timestamp.utcnow() - pd.Timedelta(1, 'h'))
+    parser.add_argument('--use_cache', type=bool, help='Use the cache for the data.', default=True)
+    parser.add_argument('--thin', type=float, help='Thin distance in km', default=40.)
+    parser.add_argument('--output', type=pathlib.Path,
+                        help='Output file to save the plot to. If not specified with be constructed from date and be pdf',
+                        default=None)
+    parser.add_argument('--figsize', nargs=2, type=float, help='Page size for the plot. Default is A3.',
+                        default=(11.69, 16.53))
+    parser.add_argument('--region', nargs=4, type=float,
+                        help='Region (long0,long1,lat0,lat1) to plot in degrees. Default is GB + Ireland. ',
+                        default=(-11., 2., 49.0, 61.5))  # from Guernsey to Shetland, W-Ireland to E-England
+    parser.add_argument('--use_midas_csv', action='store_true',
+                        help='Use open-midas csv files. They should already have been downloaded from BADC. ')
+    parser.add_argument('--nocache', action='store_true', help='Do not use the cache.')
+    parser.add_argument('--plot_pressure', action='store_true',
+                        help='Plot the pressure on the map. Will try and retrieve ERA5 data.')
+    parser.add_argument('--nointeractive', action='store_true', help='Do not use an interactive backend.')
+    args = parser.parse_args()
+
+    save_file = args.output
+    if save_file is None:
+        save_file = args.date.strftime("station_plot_%Y%m%d_%H.pdf")
+
+    if not args.nointeractive:
+        backends_to_try = ['QtAgg','TkAgg']
+        for backend in backends_to_try:
+            try:
+                matplotlib.use(backend)
+                print("Using backend ", backend)
+                break
+            except ImportError:
+                print(f'Failed to use backend {backend}')
+
+
+    synops_to_plot, pressure = read_synops(args.date, region=args.region, nocache=args.nocache, use_midas_csv=args.use_midas_csv,
+                                 get_pressure=args.plot_pressure)
+    fig_map_synop,ax = plot_synops(synops_to_plot, pressure, thin=args.thin, figsize=args.figsize)
+    fig_map_synop.show()
+    fig_map_synop.savefig(save_file, dpi=300, bbox_inches="tight")
