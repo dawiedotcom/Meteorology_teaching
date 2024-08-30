@@ -350,7 +350,7 @@ def plot_synops(synops:pd.DataFrame,
     ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, color='grey')
     # plot the pressure (if we have it)
     if pressure is not None:
-        p = pressure.sel(valid_time=date.tz_convert(None)).msl.squeeze(drop=True) / 100  # convert to hPa
+        p = pressure.msl.squeeze(drop=True) / 100  # convert to hPa
         cs = p.plot.contour(ax=ax, transform=ccrs.PlateCarree(), colors='grey', levels=range(960, 1040, 4), zorder=-200)
         ax.clabel(cs, inline=True, fontsize=10, zorder=-200, colors='grey')
     stns = metlib.SynopPlot(ax, synops_to_plot.longitude, synops_to_plot.latitude, synops_to_plot,
