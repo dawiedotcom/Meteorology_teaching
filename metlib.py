@@ -10,8 +10,7 @@ import datetime
 
 import pandas as pd
 import metpy.calc
-
-from cachier import cachier  # provides a cache for functions
+import cachier
 from metpy.units import units
 import pymetdecoder.synop
 import requests
@@ -22,15 +21,15 @@ import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 pd.options.mode.copy_on_write = True
 
-
+# setup cachier
 root_dir = pathlib.Path(__file__).resolve().parent
 cache_dir = root_dir / 'data' / 'cache'
 cache_dir.mkdir(exist_ok=True, parents=True)
-
+cachier.set_default_params(cache_dir=cache_dir, stale_after=datetime.timedelta(weeks=2), next_time=True)
 typ_flt_int = typing.Union[float, int]
 default_region = (-11., 2., 49.0, 61.5)
 
-@cachier(cache_dir=cache_dir)
+@cachier.cachier()
 def fix_midas_data(input: pd.DataFrame,
                    date_range: typing.Optional[(pd.Timestamp, pd.Timestamp)] = None) -> pd.DataFrame:
     hdr = input.columns
@@ -575,7 +574,7 @@ class SynopPlot(StationPlot):
         self.plot_barb(u, v, plot_units=units.knots, **barb)  # direction from which wind is coming.
 
 
-@cachier(stale_after=datetime.timedelta(weeks=2), next_time=True)
+@cachier.cachier()
 def get_era5_pressure(date: pd.Timestamp,
                       region: typing.Optional[tuple[float, float, float, float]] = default_region) -> typing.Optional[
     xarray.Dataset]:
@@ -610,7 +609,7 @@ def get_era5_pressure(date: pd.Timestamp,
     return pressure  #
 
 
-@cachier(stale_after=datetime.timedelta(weeks=2), next_time=True)
+@cachier.cachier()
 def retrieve_synops(date_range: tuple[pd.Timestamp, pd.Timestamp],
                     use_cache: bool = True,
                     block: typing.Optional[str] = '03',
@@ -754,7 +753,7 @@ def decode_synop_messages(synop_messages: pd.DataFrame) -> pd.DataFrame:
     return all_data
 
 
-@cachier(stale_after=datetime.timedelta(weeks=2), next_time=True)
+@cachier.cachier()
 def read_isd_metadata(file: typing.Optional[pathlib.Path] = None,
                       country: typing.Optional[str | tuple[str]] = None,
                       use_cache: bool = True) -> pd.DataFrame:
@@ -794,7 +793,7 @@ def read_isd_metadata(file: typing.Optional[pathlib.Path] = None,
     return isd_data
 
 
-@cachier(stale_after=datetime.timedelta(weeks=2), next_time=True)
+@cachier.cachier()
 def load_open_midas_synop(date_range: tuple[pd.Timestamp, pd.Timestamp]) -> pd.DataFrame:
     """
     Load the open midas data for the given date range.
@@ -822,7 +821,7 @@ def load_open_midas_synop(date_range: tuple[pd.Timestamp, pd.Timestamp]) -> pd.D
     return all_stations
 
 
-@cachier(stale_after=datetime.timedelta(weeks=2), next_time=True)
+@cachier.cachier()
 def read_synops(date: pd.Timestamp = pd.Timestamp.utcnow(),
                 region: tuple[typ_flt_int, typ_flt_int, typ_flt_int, typ_flt_int] = default_region,
                 nocache: bool = False,
