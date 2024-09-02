@@ -1,0 +1,22 @@
+[project]
+name = "plot_synops"
+version = "0.1.2"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas~=2.2.2",
+  "matplotlib~=3.6.0",
+  "numpy~=1.26.4",
+  "pymetdecoder~=0.1.4",
+  "pytest~=8.3.2",
+  "metpy~=1.6.2",
+  "cartopy~=0.23",
+  "lxml~=4.9.1",
+  "xarray~=2023.6.0",
+  "cachier~=3.0.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

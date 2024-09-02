@@ -17,7 +17,7 @@ import requests
 import xarray
 from metpy.calc import reduce_point_density
 
-import metlib
+from . import metlib
 import pymetdecoder
 cache_dir = metlib.cache_dir
 pd.options.mode.copy_on_write = True
