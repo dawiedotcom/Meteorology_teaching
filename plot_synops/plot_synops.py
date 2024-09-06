@@ -264,7 +264,7 @@ def read_synops(date: pd.Timestamp = pd.Timestamp.utcnow(),
 
     if use_midas_csv:  # use the downloaded open-midas data
         date_range = (date - pd.Timedelta(4, 'h'), date + pd.Timedelta(1, 'h'))  # data range to retrieve.
-        midas_stations = load_open_midas_synop(date_range, cachier__skip_cache=args.nocache)
+        midas_stations = load_open_midas_synop(date_range, cachier__skip_cache=nocache)
         synops = midas_stations[midas_stations.ob_time == date].groupby(by='src_id', as_index=True).head(
             1).set_index('src_id')
 
@@ -277,7 +277,7 @@ def read_synops(date: pd.Timestamp = pd.Timestamp.utcnow(),
 
     else:  # get the raw synop messages and decode them
         date_range = (date, date)  # date range to retrieve -- just the date!
-        isd = read_isd_metadata(country=('UK', 'EI'), cachier__skip_cache=args.nocache)  # extract the UK data
+        isd = read_isd_metadata(country=('UK', 'EI'), cachier__skip_cache=nocache)  # extract the UK data
         # now convert USAF locations to WMO locations. -- first five values.
         isd['wmo_station_id'] = isd.USAF.str[0:5].astype('Int32')
         isd = isd.rename(columns=dict(LON='longitude', LAT='latitude'))
@@ -297,7 +297,7 @@ def read_synops(date: pd.Timestamp = pd.Timestamp.utcnow(),
     pressure = None
     if get_pressure:
         try:
-            pressure = metlib.get_era5_pressure(date, region=args.region, cachier__skip_cache=args.nocache)
+            pressure = metlib.get_era5_pressure(date, region=region, cachier__skip_cache=nocache)
         except ValueError:
             print('Failed to retrieve ERA5 data. ')
             pass
@@ -307,6 +307,7 @@ def plot_synops(synops:pd.DataFrame,
                 pressure:typing.Optional[xarray.Dataset]=None,
                 thin:float=100.,
                 figsize:tuple[float,float]=(10,10), #
+                region: tuple[typ_flt_int, typ_flt_int, typ_flt_int, typ_flt_int] = (-11., 2., 49.0, 61.5),
                 ) -> tuple[matplotlib.pyplot.Figure,matplotlib.pyplot.Axes]:
     """"
     Plot the SYNOP data on a map.
@@ -345,7 +346,7 @@ def plot_synops(synops:pd.DataFrame,
     fig, ax = plt.subplots(1, 1, figsize=figsize, subplot_kw=dict(projection=proj), clear=True,
                                      layout='tight', num='synop_circ')
 
-    ax.set_extent(args.region, crs=ccrs.PlateCarree())
+    ax.set_extent(region, crs=ccrs.PlateCarree())
     ax.coastlines(color='grey', linewidth=1)
     ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, color='grey')
     # plot the pressure (if we have it)
@@ -404,6 +405,6 @@ if __name__ == '__main__':
 
     synops_to_plot, pressure = read_synops(args.date, region=args.region, nocache=args.nocache, use_midas_csv=args.use_midas_csv,
                                  get_pressure=args.plot_pressure)
-    fig_map_synop,ax = plot_synops(synops_to_plot, pressure, thin=args.thin, figsize=args.figsize)
+    fig_map_synop,ax = plot_synops(synops_to_plot, pressure, thin=args.thin, figsize=args.figsize, region=args.region)
     fig_map_synop.show()
     fig_map_synop.savefig(save_file, dpi=300, bbox_inches="tight")
