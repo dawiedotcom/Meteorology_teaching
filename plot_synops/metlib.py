@@ -599,9 +599,7 @@ def get_era5_pressure(date: pd.Timestamp,
         'download_format': 'unarchived',
         'area': area,
     }
-    with tempfile.NamedTemporaryFile(suffix='nc',
-                                     delete_on_close=False) as f:  # used a temp file. Will be deleted when context done.
-        f.close()  # close it so can write to it!
+    with tempfile.NamedTemporaryFile(mode='w', suffix='nc') as f:  # used a temp file. Will be deleted when context done.
         filename = f.name
         client = cdsapi.Client()  # will need to set up .cdsapirc file. See https://cds-beta.climate.copernicus.eu/how-to-api
         client.retrieve(dataset, request, filename)
