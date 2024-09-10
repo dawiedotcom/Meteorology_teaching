@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 
-import metlib
+from . import metlib
 import pymetdecoder
 cache_dir = metlib.cache_dir
 pd.options.mode.copy_on_write = True
